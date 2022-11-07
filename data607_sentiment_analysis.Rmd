@@ -1,0 +1,366 @@
+---
+title: "Data607_Sentiment Analysis_Assignment"
+author: "Mahmud Hasan Al Raji"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Sentiment analysis with tidy data
+
+In this assignment I will perform sentiment analysis from different corpuses. As per the instruction, I will first recreate the sentiment analysis example code taken from chapter 2 of the book, “Text Mining with R” (Julia Silge & David Robinson) using the novel written by Jane Austen. Later, I will apply similar kind of sentiment analysis on H.G.Wells's The Time Machine using a different sentiment lexicon.
+
+
+# Load packages
+
+```{r }
+library(tidyverse)
+library(textdata)
+library(tidytext)
+library(janeaustenr)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(ggplot2)
+library(wordcloud)
+library(reshape2)
+```
+
+# Getting sentiment lexicons
+Below are the codes for getting the three sentiment lexicons:
+
+```{r }
+get_sentiments("afinn")
+```
+
+```{r}
+get_sentiments("bing")
+```
+
+```{r }
+get_sentiments("nrc")
+```
+
+## Sentiment Analysis with Jane Austen Novels
+Making the text is in a tidy format with one word per row.
+```{r }
+tidy_books <- austen_books() %>%
+  group_by(book) %>%
+  mutate(
+    linenumber = row_number(),
+    chapter = cumsum(str_detect(text, 
+                                regex("^chapter [\\divxlc]", 
+                                      ignore_case = TRUE)))) %>%
+  ungroup() %>%
+  unnest_tokens(word, text)
+```
+
+Now, the text is in a tidy format with one word per row. So, we are ready to do the sentiment analysis. 
+Finding the most joy words in *Emma* by performing the sentiment analysis by using the inner_join function.  
+```{r }
+nrc_joy <- get_sentiments("nrc") %>% 
+  filter(sentiment == "joy")
+tidy_books %>%
+  filter(book == "Emma") %>%
+  inner_join(nrc_joy) %>%
+  count(word, sort = TRUE)
+```
+
+We see mostly positive, happy words about hope, friendship, and love here. We also see some words that may not be used joyfully by Austen ("found", "present").
+
+Performing the sentiment analysis with bing lexicon by calculating a net sentiment (positive - negative).
+
+```{r }
+jane_austen_sentiment <- tidy_books %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(book, index = linenumber %/% 80, sentiment) %>%
+  pivot_wider(names_from = sentiment, values_from = n, values_fill = 0) %>% 
+  mutate(sentiment = positive - negative)
+```
+Now we can plot these sentiment scores across the plot trajectory of each novel. Notice that we are plotting against the `index` on the x-axis that keeps track of narrative time in sections of text.
+
+```{r }
+ggplot(jane_austen_sentiment, aes(index, sentiment, fill = book)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~book, ncol = 2, scales = "free_x")
+```
+
+We can see from plot above, how the plot of each novel changes toward more positive or negative sentiment over the trajectory of the story.
+
+## Comparing the three sentiment dictionaries
+Let's use all three sentiment lexicons and examine how the sentiment changes across the narrative arc of *Pride and Prejudice*. First, let's use `filter()` to choose only the words from the one novel we are interested in.
+
+```{r }
+pride_prejudice <- tidy_books %>% 
+  filter(book == "Pride & Prejudice")
+pride_prejudice
+```
+
+Calculating the net sentiment with three lexicons:
+
+```{r }
+afinn <- pride_prejudice %>% 
+  inner_join(get_sentiments("afinn")) %>% 
+  group_by(index = linenumber %/% 80) %>% 
+  summarise(sentiment = sum(value)) %>% 
+  mutate(method = "AFINN")
+bing_and_nrc <- bind_rows(
+  pride_prejudice %>% 
+    inner_join(get_sentiments("bing")) %>%
+    mutate(method = "Bing et al."),
+  pride_prejudice %>% 
+    inner_join(get_sentiments("nrc") %>% 
+                 filter(sentiment %in% c("positive", 
+                                         "negative"))
+    ) %>%
+    mutate(method = "NRC")) %>%
+  count(method, index = linenumber %/% 80, sentiment) %>%
+  pivot_wider(names_from = sentiment,
+              values_from = n,
+              values_fill = 0) %>% 
+  mutate(sentiment = positive - negative)
+```
+
+Comparing the three sentiment lexicons using *Pride and Prejudice*
+
+```{r }
+bind_rows(afinn, 
+          bing_and_nrc) %>%
+  ggplot(aes(index, sentiment, fill = method)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~method, ncol = 1, scales = "free_y")
+```
+
+The three different lexicons for calculating sentiment give results that are different in an absolute sense but have similar relative trajectories through the novel. We see similar dips and peaks in sentiment at about the same places in the novel, but the absolute values are significantly different. The AFINN lexicon
+gives the largest absolute values, with high positive values. The lexicon from Bing et al. has lower absolute values and seems to label larger blocks of contiguous positive or negative text. The NRC results are shifted higher relative to the other two, labeling the text more positively, but detects similar relative changes in the text. We find similar differences between the methods when looking at other novels; the NRC sentiment is high, the AFINN sentiment has more variance, the Bing et al. sentiment appears to find longer stretches of similar text, but all three agree roughly on the overall trends in the sentiment through a narrative arc.
+
+Why is, for example, the result for the NRC lexicon biased so high in sentiment compared to the Bing et al. result? Let's look briefly at how many positive and negative words are in these lexicons.
+
+```{r }
+get_sentiments("nrc") %>% 
+  filter(sentiment %in% c("positive", "negative")) %>% 
+  count(sentiment)
+```
+
+
+```{r}
+get_sentiments("bing") %>% 
+  count(sentiment)
+```
+
+Both lexicons have more negative than positive words, but the ratio of negative to positive words is higher in the Bing lexicon than the NRC lexicon. This will contribute to the effect we see in the plot above, as will any systematic difference in word matches, e.g. if the negative words in the NRC lexicon do not match the words that Jane Austen uses very well. Whatever the source of these differences, we see similar relative trajectories across the narrative arc, with similar changes in slope, but marked differences in absolute sentiment from lexicon to lexicon. This is all important context to keep in mind when choosing a sentiment lexicon for analysis.
+
+## Most common positive and negative words
+ 
+
+```{r }
+# Finding each word's contribution to each sentiment
+
+bing_word_counts <- tidy_books %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  ungroup()
+bing_word_counts
+```
+
+```{r }
+# Graphical representation of each word's contribution towards positive and negative sentiments
+
+bing_word_counts %>%
+  group_by(sentiment) %>%
+  slice_max(n, n = 10) %>% 
+  ungroup() %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(n, word, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, scales = "free_y") +
+  labs(x = "Contribution to sentiment",
+       y = NULL)
+```
+It is seen that the word ‘miss’ is contributing significantly towards negative sentiment. But here the context of this word is not negative. SO,we can create a custom stop word list to adjust for anomalies in the sentiment lexicon used.
+
+```{r}
+custom_stop_words <- bind_rows(tibble(word = c("miss"),  
+                                      lexicon = c("custom")), 
+                               stop_words)
+custom_stop_words
+```
+
+## Wordclouds
+```{r }
+# looking at the most common words as a whole with wordcloud.
+
+tidy_books %>%
+  anti_join(stop_words) %>%
+  count(word) %>%
+  with(wordcloud(word, n, max.words = 100))
+```
+
+```{r }
+# Wordcloud of most frequent words splitted by postive or negative sentiment
+
+tidy_books %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  acast(word ~ sentiment, value.var = "n", fill = 0) %>%
+  comparison.cloud(colors = c("gray20", "gray80"),
+                   max.words = 100)
+```
+
+# Looking at units beyond just words
+```{r }
+# Example of tokenizing text into sentences
+p_and_p_sentences <- tibble(text = prideprejudice) %>% 
+  unnest_tokens(sentence, text, token = "sentences")
+p_and_p_sentences$sentence[2]
+```
+
+# Splitting the text of Jane Austen's novels into a data frame by chapter by using regex pattern.
+```{r }
+austen_chapters <- austen_books() %>%
+  group_by(book) %>%
+  unnest_tokens(chapter, text, token = "regex", 
+                pattern = "Chapter|CHAPTER [\\dIVXLC]") %>%
+  ungroup()
+austen_chapters %>% 
+  group_by(book) %>% 
+  summarise(chapters = n())
+```
+
+# Finding the chapter that has the highest proportion of negative words in each book
+```{r }
+
+bingnegative <- get_sentiments("bing") %>% 
+  filter(sentiment == "negative")
+wordcounts <- tidy_books %>%
+  group_by(book, chapter) %>%
+  summarize(words = n())
+tidy_books %>%
+  semi_join(bingnegative) %>%
+  group_by(book, chapter) %>%
+  summarize(negativewords = n()) %>%
+  left_join(wordcounts, by = c("book", "chapter")) %>%
+  mutate(ratio = negativewords/words) %>%
+  filter(chapter != 0) %>%
+  slice_max(ratio, n = 1) %>% 
+  ungroup()
+```
+
+# New corpus and lexicon
+Previously i used the janeaustenr package to explore tidying text. Now, i am going to use the gutenbergr package (Robinson 2016). The gutenbergr package provides access to the public domain works from the Project Gutenberg collection. The package includes tools both for downloading books and a complete dataset of Project Gutenberg metadata that can be used to find works of interest. Here, I am going to perform sentiment analysis for different lexicons on 'The Time Machine' which a novel written by H.G.Wells. 
+
+# Installation and loading gutenbergr package
+```{r }
+devtools::install_github("ropensci/gutenbergr")
+library(gutenbergr)
+``` 
+# Sentiment Analysis for H.G.Wells's 'The Time Machine' novel.
+```{r }
+#Load the book, tidying the text into word token
+
+the_time_machine<- gutenberg_download(35)
+tidy_time_machine <- the_time_machine %>%
+  unnest_tokens(word, text) %>%
+  anti_join(stop_words)
+
+# Most common words in the book
+
+tidy_time_machine %>%
+  count(word, sort = TRUE)
+
+# Wordcloud of most frequent words
+
+tidy_time_machine %>%
+  count(word) %>%
+  with(wordcloud(word, n, max.words =100))
+```
+
+# Use of new lexicon "louhgran"
+```{r}
+get_sentiments("loughran") %>% 
+  filter(sentiment %in% c("positive", "negative")) %>% 
+  count(sentiment)
+
+sentiment_positive <- get_sentiments("loughran") %>% 
+  filter(sentiment == "positive")
+
+tidy_time_machine%>%
+  inner_join(sentiment_positive) %>%
+  count(word, sort=TRUE) %>% 
+ungroup()
+
+# Wordcloud of most frequent words split by loughran sentiment
+
+tidy_time_machine %>%
+  inner_join(get_sentiments("loughran")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  acast(word ~ sentiment, value.var = "n", fill = 0) %>%
+  comparison.cloud(colors = c("gray20", "gray80"),
+                   max.words = 100)
+```
+
+# Finding the contribution of words to different sentiments with loughran lexicon
+```{r }
+loughran_word_counts <- tidy_time_machine %>%
+  inner_join(get_sentiments("loughran")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  ungroup()
+loughran_word_counts
+
+loughran_word_counts %>%
+  group_by(sentiment) %>%
+  slice_max(n, n = 10) %>% 
+  ungroup() %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(n, word, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, scales = "free_y") +
+  labs(x = "Contribution to sentiment",
+       y = NULL)
+```
+
+# The section below repeats the analysis with the bing lexicon to categorize words as positive and negative
+```{r }
+bing_word_counts <- tidy_time_machine %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  ungroup()
+bing_word_counts
+```
+
+```{r }
+
+bing_word_counts %>%
+  group_by(sentiment) %>%
+  slice_max(n, n = 10) %>% 
+  ungroup() %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(n, word, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, scales = "free_y") +
+  labs(x = "Contribution to sentiment",
+       y = NULL)
+```
+
+# Finding joy words using nrc lexicon
+```{r }
+nrc_joy <- get_sentiments("nrc") %>% 
+  filter(sentiment == "joy")
+
+tidy_time_machine %>%
+  inner_join(nrc_joy) %>%
+  count(word, sort = TRUE)
+```
+
+
+# References
+
+1. Robinson, J. S. and D. (n.d.). Sentiment analysis with Tidy Data Text mining with R. https://www.tidytextmining.com/sentiment.html
+
+2. The Time Machine by H.G.Wells. 
+https://www.gutenberg.org/ebooks/35
+
+
